@@ -1,0 +1,26 @@
+# Python caches
+**pycache**/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+
+# Runtime outputs
+checkpoints/
+outputs/
+run_state/
+logs/
+artifacts/
+transfer_packages/
+
+# Model and compiled-engine artifacts
+*.safetensors
+*.pt
+*.pth
+*.onnx
+*.engine
+*.plan
+
+# Generated archives
+*.tar
+*.tar.gz
+*.zip

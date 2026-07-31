@@ -1,0 +1,654 @@
+diff --git a/src/lerobot/policies/factory.py b/src/lerobot/policies/factory.py
+index a593e5b..da47faf 100644
+--- a/src/lerobot/policies/factory.py
++++ b/src/lerobot/policies/factory.py
+@@ -272,6 +272,7 @@ def make_pre_post_processors(
+                 overrides=kwargs.get("preprocessor_overrides", {}),
+                 to_transition=batch_to_transition,
+                 to_output=transition_to_batch,
++                local_files_only=kwargs.get("local_files_only", False),
+             ),
+             PolicyProcessorPipeline.from_pretrained(
+                 pretrained_model_name_or_path=pretrained_path,
+@@ -281,6 +282,7 @@ def make_pre_post_processors(
+                 overrides=kwargs.get("postprocessor_overrides", {}),
+                 to_transition=policy_action_to_transition,
+                 to_output=transition_to_policy_action,
++                local_files_only=kwargs.get("local_files_only", False),
+             ),
+         )
+ 
+diff --git a/src/lerobot/policies/pi05/__init__.py b/src/lerobot/policies/pi05/__init__.py
+index 4f9a9de..3759c87 100644
+--- a/src/lerobot/policies/pi05/__init__.py
++++ b/src/lerobot/policies/pi05/__init__.py
+@@ -14,8 +14,8 @@
+ # See the License for the specific language governing permissions and
+ # limitations under the License.
+ 
+-from .configuration_pi05 import PI05Config
++from .configuration_pi05 import PI05Config, RTCTrainingConfig
+ from .modeling_pi05 import PI05Policy
+ from .processor_pi05 import make_pi05_pre_post_processors
+ 
+-__all__ = ["PI05Config", "PI05Policy", "make_pi05_pre_post_processors"]
++__all__ = ["PI05Config", "PI05Policy", "RTCTrainingConfig", "make_pi05_pre_post_processors"]
+diff --git a/src/lerobot/policies/pi05/configuration_pi05.py b/src/lerobot/policies/pi05/configuration_pi05.py
+index b96e6d1..511cd5f 100644
+--- a/src/lerobot/policies/pi05/configuration_pi05.py
++++ b/src/lerobot/policies/pi05/configuration_pi05.py
+@@ -14,6 +14,7 @@
+ # See the License for the specific language governing permissions and
+ # limitations under the License.
+ 
++import math
+ from dataclasses import dataclass, field
+ 
+ from lerobot.configs.policies import PreTrainedConfig
+@@ -26,6 +27,45 @@ from lerobot.utils.constants import ACTION, OBS_IMAGES, OBS_STATE
+ DEFAULT_IMAGE_SIZE = 224
+ 
+ 
++@dataclass
++class RTCTrainingConfig:
++    """Configuration for clean-prefix, postfix-only RTC training.
++
++    ``max_delay`` is expressed in action steps.  A delay of zero keeps the full
++    action chunk trainable, while larger delays commit a clean prefix and mask
++    it out of the flow-matching loss.
++    """
++
++    enabled: bool = False
++    max_delay: int = 10
++    min_postfix_steps: int = 1
++    observed_delay_histogram: tuple[float, ...] = ()
++    observed_histogram_weight: float = 0.9
++
++    def __post_init__(self) -> None:
++        if self.max_delay < 0:
++            raise ValueError(f"max_delay must be non-negative, got {self.max_delay}")
++        if self.min_postfix_steps <= 0:
++            raise ValueError(f"min_postfix_steps must be positive, got {self.min_postfix_steps}")
++        if not 0.0 <= self.observed_histogram_weight <= 1.0:
++            raise ValueError(
++                "observed_histogram_weight must be between 0 and 1, "
++                f"got {self.observed_histogram_weight}"
++            )
++        if self.observed_delay_histogram:
++            if len(self.observed_delay_histogram) != self.max_delay + 1:
++                raise ValueError(
++                    "observed_delay_histogram must have max_delay + 1 entries, "
++                    f"got {len(self.observed_delay_histogram)} for max_delay={self.max_delay}"
++                )
++            if any(
++                not math.isfinite(weight) or weight < 0 for weight in self.observed_delay_histogram
++            ):
++                raise ValueError("observed_delay_histogram must contain finite non-negative values")
++            if sum(self.observed_delay_histogram) <= 0:
++                raise ValueError("observed_delay_histogram must contain a positive value")
++
++
+ @PreTrainedConfig.register_subclass("pi05")
+ @dataclass
+ class PI05Config(PreTrainedConfig):
+@@ -52,6 +92,7 @@ class PI05Config(PreTrainedConfig):
+ 
+     # Real-Time Chunking (RTC) configuration
+     rtc_config: RTCConfig | None = None
++    rtc_training: RTCTrainingConfig = field(default_factory=RTCTrainingConfig)
+ 
+     image_resolution: tuple[int, int] = (
+         DEFAULT_IMAGE_SIZE,
+@@ -103,7 +144,17 @@ class PI05Config(PreTrainedConfig):
+         # Validate configuration
+         if self.n_action_steps > self.chunk_size:
+             raise ValueError(
+-                f"n_action_steps ({self.n_action_steps}) cannot be greater than chunk_size ({self.chunk_size})"
++                f"n_action_steps ({self.n_action_steps}) cannot be greater than "
++                f"chunk_size ({self.chunk_size})"
++            )
++        if self.rtc_training.min_postfix_steps > self.chunk_size:
++            raise ValueError(
++                "rtc_training.min_postfix_steps "
++                f"({self.rtc_training.min_postfix_steps}) cannot exceed chunk_size ({self.chunk_size})"
++            )
++        if self.rtc_training.enabled and self.rtc_config is not None and self.rtc_config.enabled:
++            raise ValueError(
++                "rtc_training and inference-time rtc_config guidance cannot both be enabled"
+             )
+ 
+         if self.paligemma_variant not in ["gemma_300m", "gemma_2b"]:
+diff --git a/src/lerobot/policies/pi05/modeling_pi05.py b/src/lerobot/policies/pi05/modeling_pi05.py
+index 104ec63..e492e2f 100644
+--- a/src/lerobot/policies/pi05/modeling_pi05.py
++++ b/src/lerobot/policies/pi05/modeling_pi05.py
+@@ -41,7 +41,7 @@ else:
+     PaliGemmaForConditionalGeneration = None
+ 
+ from lerobot.configs.policies import PreTrainedConfig
+-from lerobot.policies.pi05.configuration_pi05 import DEFAULT_IMAGE_SIZE, PI05Config
++from lerobot.policies.pi05.configuration_pi05 import DEFAULT_IMAGE_SIZE, PI05Config, RTCTrainingConfig
+ from lerobot.policies.pretrained import PreTrainedPolicy, T
+ from lerobot.policies.rtc.modeling_rtc import RTCProcessor
+ from lerobot.utils.constants import (
+@@ -56,6 +56,8 @@ class ActionSelectKwargs(TypedDict, total=False):
+     inference_delay: int | None
+     prev_chunk_left_over: Tensor | None
+     execution_horizon: int | None
++    action_prefix: Tensor | None
++    prefix_length: int | None
+ 
+ 
+ def get_safe_dtype(target_dtype, device_type):
+@@ -98,6 +100,123 @@ def sample_beta(alpha, beta, bsize, device):  # see openpi `sample_beta` (exact
+     return dist.sample((bsize,))
+ 
+ 
++def sample_rtc_training_delay(
++    batch_size: int,
++    horizon: int,
++    config: RTCTrainingConfig,
++    device: torch.device,
++) -> Tensor:
++    """Sample one committed-prefix length per batch item."""
++    max_delay = min(config.max_delay, horizon - config.min_postfix_steps)
++    if max_delay < 0:
++        raise ValueError(
++            f"min_postfix_steps ({config.min_postfix_steps}) exceeds action horizon ({horizon})"
++        )
++
++    if not config.observed_delay_histogram:
++        return torch.randint(0, max_delay + 1, (batch_size,), dtype=torch.long, device=device)
++
++    observed_weights = torch.as_tensor(
++        config.observed_delay_histogram[: max_delay + 1], dtype=torch.float32, device=device
++    )
++    uniform_weights = torch.full_like(observed_weights, 1.0 / observed_weights.numel())
++    if observed_weights.sum() > 0:
++        observed_weights = observed_weights / observed_weights.sum()
++    else:
++        observed_weights = uniform_weights
++    weights = (
++        config.observed_histogram_weight * observed_weights
++        + (1.0 - config.observed_histogram_weight) * uniform_weights
++    )
++    return torch.multinomial(weights.expand(batch_size, -1), num_samples=1).squeeze(1)
++
++
++def build_rtc_training_inputs(
++    actions: Tensor,
++    noise: Tensor,
++    global_flow_time: Tensor,
++    delay: Tensor,
++) -> tuple[Tensor, Tensor, Tensor]:
++    """Build clean-prefix flow inputs and their local time/mask conditions."""
++    if actions.shape != noise.shape or actions.ndim != 3:
++        raise ValueError(
++            f"actions and noise must have the same [B,H,D] shape, got {actions.shape} and {noise.shape}"
++        )
++    batch_size, horizon = actions.shape[:2]
++    if global_flow_time.shape != (batch_size,):
++        raise ValueError(
++            f"global_flow_time must have shape ({batch_size},), got {global_flow_time.shape}"
++        )
++    if delay.shape != (batch_size,):
++        raise ValueError(f"delay must have shape ({batch_size},), got {delay.shape}")
++    if torch.any(delay < 0) or torch.any(delay >= horizon):
++        raise ValueError(f"delay must be in [0, {horizon - 1}]")
++
++    step_index = torch.arange(horizon, device=actions.device)
++    prefix_mask = step_index[None, :] < delay[:, None]
++    global_token_time = global_flow_time[:, None].expand(batch_size, horizon)
++    token_flow_time = torch.where(prefix_mask, torch.zeros_like(global_token_time), global_token_time)
++    x_t = token_flow_time[:, :, None] * noise + (1.0 - token_flow_time[:, :, None]) * actions
++    return x_t, token_flow_time, prefix_mask
++
++
++def rtc_masked_loss(
++    losses: Tensor,
++    postfix_mask: Tensor,
++) -> tuple[Tensor, Tensor]:
++    """Return an equal-weight mean and per-sample postfix loss."""
++    if losses.ndim != 3:
++        raise ValueError(f"losses must have shape [B,H,D], got {losses.shape}")
++    if postfix_mask.shape != losses.shape[:2]:
++        raise ValueError(
++            f"postfix_mask must have shape {losses.shape[:2]}, got {postfix_mask.shape}"
++        )
++    mask = postfix_mask[:, :, None].to(dtype=losses.dtype)
++    valid_per_sample = mask.sum(dim=(1, 2)) * losses.shape[-1]
++    if torch.any(valid_per_sample == 0):
++        raise ValueError("Every RTC training sample must retain at least one postfix action step")
++    per_sample_loss = (losses * mask).sum(dim=(1, 2)) / valid_per_sample
++    return per_sample_loss.mean(), per_sample_loss
++
++
++def prepare_rtc_action_prefix(
++    action_prefix: Tensor,
++    prefix_length: int | None,
++    reference: Tensor,
++) -> tuple[Tensor, Tensor]:
++    """Validate and pad an inference-time clean action prefix."""
++    if reference.ndim != 3:
++        raise ValueError(f"reference must have shape [B,H,D], got {reference.shape}")
++    batch_size, horizon, action_dim = reference.shape
++    if action_prefix.ndim == 2:
++        if batch_size != 1:
++            raise ValueError("A [P,D] action_prefix is only valid for batch size 1")
++        action_prefix = action_prefix.unsqueeze(0)
++    if action_prefix.ndim != 3 or action_prefix.shape[0] != batch_size:
++        raise ValueError(
++            f"action_prefix must have shape [B,P,D] for B={batch_size}, got {action_prefix.shape}"
++        )
++    available_prefix = action_prefix.shape[1]
++    if prefix_length is None:
++        prefix_length = available_prefix
++    if not 0 <= prefix_length <= min(available_prefix, horizon):
++        raise ValueError(
++            f"prefix_length must be in [0, {min(available_prefix, horizon)}], got {prefix_length}"
++        )
++    if action_prefix.shape[-1] > action_dim:
++        raise ValueError(
++            f"action_prefix dimension {action_prefix.shape[-1]} exceeds model dimension {action_dim}"
++        )
++
++    prefix_values = torch.zeros_like(reference)
++    prefix_values[:, :prefix_length, : action_prefix.shape[-1]] = action_prefix[
++        :, :prefix_length
++    ].to(device=reference.device, dtype=reference.dtype)
++    prefix_mask = torch.arange(horizon, device=reference.device)[None, :] < prefix_length
++    prefix_mask = prefix_mask.expand(batch_size, horizon)
++    return prefix_values, prefix_mask
++
++
+ def make_att_2d_masks(pad_masks, att_masks):  # see openpi `make_att_2d_masks` (exact copy)
+     """Copied from big_vision.
+ 
+@@ -563,6 +682,17 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
+         self.time_mlp_in = nn.Linear(action_expert_config.width, action_expert_config.width)
+         self.time_mlp_out = nn.Linear(action_expert_config.width, action_expert_config.width)
+ 
++        self.rtc_token_time_mlp_in = None
++        self.rtc_token_time_mlp_out = None
++        self.rtc_prefix_embedding = None
++        if self._rtc_training_enabled():
++            self.rtc_token_time_mlp_in = nn.Linear(action_expert_config.width, action_expert_config.width)
++            self.rtc_token_time_mlp_out = nn.Linear(action_expert_config.width, action_expert_config.width)
++            self.rtc_prefix_embedding = nn.Embedding(2, action_expert_config.width)
++            nn.init.zeros_(self.rtc_token_time_mlp_out.weight)
++            nn.init.zeros_(self.rtc_token_time_mlp_out.bias)
++            nn.init.zeros_(self.rtc_prefix_embedding.weight)
++
+         # Initialize gradient checkpointing flag
+         self.gradient_checkpointing_enabled = False
+ 
+@@ -602,6 +732,9 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
+     def _rtc_enabled(self):
+         return self.config.rtc_config is not None and self.config.rtc_config.enabled
+ 
++    def _rtc_training_enabled(self) -> bool:
++        return self.config.rtc_training.enabled
++
+     def _apply_checkpoint(self, func, *args, **kwargs):
+         """Helper method to apply gradient checkpointing if enabled."""
+         if self.gradient_checkpointing_enabled and self.training:
+@@ -674,7 +807,13 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
+ 
+         return embs, pad_masks, att_masks
+ 
+-    def embed_suffix(self, noisy_actions, timestep):
++    def embed_suffix(
++        self,
++        noisy_actions,
++        timestep,
++        token_flow_time: Tensor | None = None,
++        prefix_mask: Tensor | None = None,
++    ):
+         """Embed noisy_actions, timestep to prepare for Expert Gemma processing."""
+         embs = []
+         pad_masks = []
+@@ -706,6 +845,45 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
+         action_time_emb = action_emb
+         adarms_cond = time_emb
+ 
++        if self._rtc_training_enabled():
++            batch_size, horizon = noisy_actions.shape[:2]
++            if token_flow_time is None:
++                token_flow_time = timestep[:, None].expand(batch_size, horizon)
++            if prefix_mask is None:
++                prefix_mask = torch.zeros(
++                    (batch_size, horizon), dtype=torch.bool, device=noisy_actions.device
++                )
++            if token_flow_time.shape != (batch_size, horizon):
++                raise ValueError(
++                    f"token_flow_time must have shape {(batch_size, horizon)}, got {token_flow_time.shape}"
++                )
++            if prefix_mask.shape != (batch_size, horizon):
++                raise ValueError(
++                    f"prefix_mask must have shape {(batch_size, horizon)}, got {prefix_mask.shape}"
++                )
++            if prefix_mask.dtype != torch.bool:
++                raise ValueError(f"prefix_mask must be bool, got {prefix_mask.dtype}")
++
++            token_time_emb = create_sinusoidal_pos_embedding(
++                token_flow_time.reshape(-1),
++                self.action_in_proj.out_features,
++                min_period=self.config.min_period,
++                max_period=self.config.max_period,
++                device=token_flow_time.device,
++            ).reshape(batch_size, horizon, -1)
++            token_time_emb = token_time_emb.to(dtype=action_emb.dtype)
++
++            def rtc_token_time_mlp_func(token_time_emb):
++                x = self.rtc_token_time_mlp_in(token_time_emb)
++                x = F.silu(x)
++                return self.rtc_token_time_mlp_out(x)
++
++            token_time_emb = self._apply_checkpoint(rtc_token_time_mlp_func, token_time_emb)
++            prefix_emb = self.rtc_prefix_embedding(prefix_mask.long()).to(dtype=action_emb.dtype)
++            action_time_emb = action_time_emb + token_time_emb + prefix_emb
++        elif token_flow_time is not None or prefix_mask is not None:
++            raise ValueError("RTC token conditions require rtc_training.enabled=true")
++
+         embs.append(action_time_emb)
+         bsize, action_time_dim = action_time_emb.shape[:2]
+         action_time_mask = torch.ones(bsize, action_time_dim, dtype=torch.bool, device=timestep.device)
+@@ -721,7 +899,17 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
+ 
+         return embs, pad_masks, att_masks, adarms_cond
+ 
+-    def forward(self, images, img_masks, tokens, masks, actions, noise=None, time=None) -> Tensor:
++    def forward(
++        self,
++        images,
++        img_masks,
++        tokens,
++        masks,
++        actions,
++        noise=None,
++        time=None,
++        return_loss_mask: bool = False,
++    ) -> Tensor | tuple[Tensor, Tensor]:
+         """Do a full training forward pass and compute the loss."""
+         if noise is None:
+             noise = self.sample_noise(actions.shape, actions.device)
+@@ -729,12 +917,25 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
+         if time is None:
+             time = self.sample_time(actions.shape[0], actions.device)
+ 
+-        time_expanded = time[:, None, None]
+-        x_t = time_expanded * noise + (1 - time_expanded) * actions
++        prefix_mask = None
++        token_flow_time = None
++        if self._rtc_training_enabled():
++            delay = sample_rtc_training_delay(
++                actions.shape[0], actions.shape[1], self.config.rtc_training, actions.device
++            )
++            x_t, token_flow_time, prefix_mask = build_rtc_training_inputs(actions, noise, time, delay)
++        else:
++            time_expanded = time[:, None, None]
++            x_t = time_expanded * noise + (1 - time_expanded) * actions
+         u_t = noise - actions
+ 
+         prefix_embs, prefix_pad_masks, prefix_att_masks = self.embed_prefix(images, img_masks, tokens, masks)
+-        suffix_embs, suffix_pad_masks, suffix_att_masks, adarms_cond = self.embed_suffix(x_t, time)
++        suffix_embs, suffix_pad_masks, suffix_att_masks, adarms_cond = self.embed_suffix(
++            x_t,
++            time,
++            token_flow_time=token_flow_time,
++            prefix_mask=prefix_mask,
++        )
+ 
+         if (
+             self.paligemma_with_expert.paligemma.language_model.layers[0].self_attn.q_proj.weight.dtype
+@@ -774,7 +975,22 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
+ 
+         v_t = self._apply_checkpoint(action_out_proj_func, suffix_out)
+ 
+-        return F.mse_loss(u_t, v_t, reduction="none")
++        losses = F.mse_loss(u_t, v_t, reduction="none")
++        if return_loss_mask:
++            if prefix_mask is None:
++                postfix_mask = torch.ones(actions.shape[:2], dtype=torch.bool, device=actions.device)
++            else:
++                postfix_mask = ~prefix_mask
++            return losses, postfix_mask
++        return losses
++
++    def _prepare_action_prefix(
++        self,
++        action_prefix: Tensor,
++        prefix_length: int | None,
++        reference: Tensor,
++    ) -> tuple[Tensor, Tensor]:
++        return prepare_rtc_action_prefix(action_prefix, prefix_length, reference)
+ 
+     @torch.no_grad()  # see openpi `sample_actions` (slightly adapted)
+     def sample_actions(
+@@ -791,6 +1007,11 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
+         if num_steps is None:
+             num_steps = self.config.num_inference_steps
+ 
++        if self._rtc_training_enabled() and self._rtc_enabled():
++            raise ValueError(
++                "Training-time RTC prefix clamp and inference-time RTC guidance are mutually exclusive"
++            )
++
+         bsize = tokens.shape[0]
+         device = tokens.device
+ 
+@@ -821,9 +1042,41 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
+         dt = -1.0 / num_steps
+ 
+         x_t = noise
++        if x_t.shape[:2] != (bsize, self.config.chunk_size) or x_t.ndim != 3:
++            raise ValueError(
++                "noise must have shape "
++                f"[B,{self.config.chunk_size},D] for B={bsize}, got {x_t.shape}"
++            )
++
++        action_prefix = kwargs.get("action_prefix")
++        prefix_values = None
++        rtc_prefix_mask = None
++        if action_prefix is not None:
++            if not self._rtc_training_enabled():
++                raise ValueError("action_prefix requires rtc_training.enabled=true")
++            prefix_values, rtc_prefix_mask = self._prepare_action_prefix(
++                action_prefix,
++                kwargs.get("prefix_length"),
++                x_t,
++            )
++        elif self._rtc_training_enabled():
++            rtc_prefix_mask = torch.zeros(
++                (bsize, self.config.chunk_size), dtype=torch.bool, device=device
++            )
++
+         for step in range(num_steps):
+             time = 1.0 + step * dt
+             time_tensor = torch.tensor(time, dtype=torch.float32, device=device).expand(bsize)
++            token_flow_time = None
++            if self._rtc_training_enabled():
++                token_flow_time = time_tensor[:, None].expand(bsize, self.config.chunk_size)
++                token_flow_time = torch.where(
++                    rtc_prefix_mask,
++                    torch.zeros_like(token_flow_time),
++                    token_flow_time,
++                )
++                if prefix_values is not None:
++                    x_t = torch.where(rtc_prefix_mask[:, :, None], prefix_values, x_t)
+ 
+             def denoise_step_partial_call(input_x_t, current_timestep=time_tensor):
+                 return self.denoise_step(
+@@ -831,6 +1084,8 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
+                     past_key_values=past_key_values,
+                     x_t=input_x_t,
+                     timestep=current_timestep,
++                    token_flow_time=token_flow_time,
++                    prefix_mask=rtc_prefix_mask,
+                 )
+ 
+             if self._rtc_enabled():
+@@ -849,7 +1104,11 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
+             else:
+                 v_t = denoise_step_partial_call(x_t)
+ 
++            if prefix_values is not None:
++                v_t = v_t.masked_fill(rtc_prefix_mask[:, :, None], 0.0)
+             x_t = x_t + dt * v_t
++            if prefix_values is not None:
++                x_t = torch.where(rtc_prefix_mask[:, :, None], prefix_values, x_t)
+ 
+             if self.rtc_processor is not None and self.rtc_processor.is_debug_enabled():
+                 self.rtc_processor.track(time=time, x_t=x_t, v_t=v_t)
+@@ -862,9 +1121,16 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
+         past_key_values,
+         x_t,
+         timestep,
++        token_flow_time: Tensor | None = None,
++        prefix_mask: Tensor | None = None,
+     ):
+         """Apply one denoising step of the noise `x_t` at a given timestep."""
+-        suffix_embs, suffix_pad_masks, suffix_att_masks, adarms_cond = self.embed_suffix(x_t, timestep)
++        suffix_embs, suffix_pad_masks, suffix_att_masks, adarms_cond = self.embed_suffix(
++            x_t,
++            timestep,
++            token_flow_time=token_flow_time,
++            prefix_mask=prefix_mask,
++        )
+ 
+         suffix_len = suffix_pad_masks.shape[1]
+         batch_size = prefix_pad_masks.shape[0]
+@@ -1017,8 +1283,30 @@ class PI05Policy(PreTrainedPolicy):
+             if remap_count > 0:
+                 print(f"Remapped {remap_count} state dict keys")
+ 
+-            # Load the remapped state dict into the model
+-            missing_keys, unexpected_keys = model.load_state_dict(remapped_state_dict, strict=strict)
++            # A standard PI0.5 base checkpoint cannot contain the newly initialized
++            # training-time RTC condition modules. Load non-strictly only for this
++            # explicit opt-in path; the standard checkpoint path keeps its old strictness.
++            rtc_training_enabled = model.config.rtc_training.enabled
++            effective_strict = strict and not rtc_training_enabled
++            missing_keys, unexpected_keys = model.load_state_dict(
++                remapped_state_dict, strict=effective_strict
++            )
++
++            if rtc_training_enabled:
++                allowed_missing_prefixes = (
++                    "model.rtc_token_time_mlp_in.",
++                    "model.rtc_token_time_mlp_out.",
++                    "model.rtc_prefix_embedding.",
++                    "model.paligemma_with_expert.paligemma.model.language_model.embed_tokens.weight",
++                )
++                unsupported_missing = [
++                    key for key in missing_keys if not key.startswith(allowed_missing_prefixes)
++                ]
++                if unsupported_missing:
++                    raise RuntimeError(
++                        "RTC base checkpoint is missing non-RTC parameters: "
++                        + ", ".join(unsupported_missing[:10])
++                    )
+ 
+             if missing_keys:
+                 print(f"Missing keys when loading state dict: {len(missing_keys)} keys")
+@@ -1128,6 +1416,9 @@ class PI05Policy(PreTrainedPolicy):
+     def _rtc_enabled(self) -> bool:
+         return self.config.rtc_config is not None and self.config.rtc_config.enabled
+ 
++    def _rtc_training_enabled(self) -> bool:
++        return self.config.rtc_training.enabled
++
+     def _preprocess_images(self, batch: dict[str, Tensor]) -> tuple[list[Tensor], list[Tensor]]:
+         """Preprocess images for the model.
+ 
+@@ -1202,8 +1493,8 @@ class PI05Policy(PreTrainedPolicy):
+     @torch.no_grad()
+     def select_action(self, batch: dict[str, Tensor]) -> Tensor:
+         """Select a single action given environment observations."""
+-        assert not self._rtc_enabled(), (
+-            "RTC is not supported for select_action, use it with predict_action_chunk"
++        assert not self._rtc_enabled() and not self._rtc_training_enabled(), (
++            "RTC is not supported for select_action; use predict_action_chunk with the RTC arguments"
+         )
+ 
+         self.eval()
+@@ -1250,31 +1541,52 @@ class PI05Policy(PreTrainedPolicy):
+         actions = self.prepare_action(batch)
+ 
+         # Compute loss (no separate state needed for PI05)
+-        losses = self.model.forward(images, img_masks, tokens, masks, actions)
++        model_output = self.model.forward(
++            images,
++            img_masks,
++            tokens,
++            masks,
++            actions,
++            return_loss_mask=self._rtc_training_enabled(),
++        )
++        if self._rtc_training_enabled():
++            losses, postfix_mask = model_output
++        else:
++            losses = model_output
++            postfix_mask = None
+ 
+         # Truncate losses to actual action dimensions
+         original_action_dim = self.config.output_features[ACTION].shape[0]
+         losses = losses[:, :, :original_action_dim]
+ 
++        if postfix_mask is None:
++            per_sample_loss = losses.mean(dim=(1, 2))
++            loss = per_sample_loss.mean()
++            loss_per_dim = losses.mean(dim=(0, 1))
++        else:
++            loss, per_sample_loss = rtc_masked_loss(losses, postfix_mask)
++            loss_per_dim = (
++                losses * postfix_mask[:, :, None].to(dtype=losses.dtype)
++            ).sum(dim=(0, 1)) / postfix_mask.sum().clamp_min(1)
++
+         loss_dict = {
+-            "loss_per_dim": losses.mean(dim=[0, 1]).detach().cpu().numpy().tolist(),
++            "loss_per_dim": loss_per_dim.detach().cpu().numpy().tolist(),
+         }
++        if postfix_mask is not None:
++            loss_dict["rtc_postfix_fraction"] = postfix_mask.float().mean().item()
+ 
+         if reduction == "none":
+-            # Return per-sample losses (B,) by averaging over time and action dims
+-            per_sample_loss = losses.mean(dim=(1, 2))
+             loss_dict["loss"] = per_sample_loss.mean().item()
+             return per_sample_loss, loss_dict
+         else:
+-            # Default: return scalar mean loss
+-            loss = losses.mean()
+             loss_dict["loss"] = loss.item()
+             return loss, loss_dict
+ 
+     def _get_default_peft_targets(self) -> dict[str, any]:
+         """Return default PEFT target modules for PI0.5 fine-tuning."""
+         common_projections = (
+-            "state_proj|action_in_proj|action_out_proj|action_time_mlp_in|action_time_mlp_out"
++            "action_in_proj|action_out_proj|time_mlp_in|time_mlp_out|"
++            "rtc_token_time_mlp_in|rtc_token_time_mlp_out|rtc_prefix_embedding"
+         )
+         target_modules = rf"(.*\.gemma_expert\..*\.self_attn\.(q|v)_proj|model\.({common_projections}))"
+         return {
+diff --git a/src/lerobot/processor/pipeline.py b/src/lerobot/processor/pipeline.py
+index 97ec716..6fe8a6a 100644
+--- a/src/lerobot/processor/pipeline.py
++++ b/src/lerobot/processor/pipeline.py
+@@ -969,8 +969,14 @@ class DataProcessorPipeline(HubMixin, Generic[TInput, TOutput]):
+         state_filename = step_entry["state_file"]
+ 
+         # Try local file first
+-        if base_path and (base_path / state_filename).exists():
++        if base_path and (base_path / state_filename).is_file():
+             state_path = str(base_path / state_filename)
++        elif Path(model_id).is_dir() or Path(model_id).is_file() or hub_download_kwargs.get(
++            "local_files_only"
++        ) is True:
++            raise FileNotFoundError(
++                f"Processor state file '{state_filename}' is missing from local checkpoint '{model_id}'"
++            )
+         else:
+             # Download from Hub
+             state_path = hf_hub_download(

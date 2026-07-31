@@ -1,0 +1,16 @@
+{
+  "upstream_commit": "b86a942a073ea241f9bd6916a705f81906f4638b",
+  "upstream_repository": "https://github.com/Dexmal/realtime-vla",
+  "files": {
+    "pi0_infer.py": {
+      "git_blob": "40f546a8f70cdfddea481a9cd4cf97ca2bba5ff7",
+      "upstream_sha256": "be6c4002a88ba3cd251f551a16948f52e0917b8f9a3a2a8b67f13f4f3fadfb83",
+      "vendored_sha256": "ebb36c057fb7dfce4509aef464cadce6e2adc8417370b13a8a69ececa6c8d5a5"
+    },
+    "pi05_infer.py": {
+      "git_blob": "1ea459a68a69d6bc6d5bd3003b680d41c3af20d7",
+      "upstream_sha256": "761ebc6406d31a5d6b12b8091f489ac485744e845b674ef64ba784a5d6d1837a",
+      "vendored_sha256": "07e6b562745eadf47b61faf00d3149a86ebd5899f38805e12d7ca2683d06d615"
+    }
+  }
+}

@@ -1,0 +1,122 @@
+{
+  "format": "jz_pi05_training_time_rtc_config",
+  "version": 1,
+  "config_id": "pi05_jz100_model16_head_right_full_rtc_e15_d5_seed1000_strict_ab",
+  "purpose": "Preserve the working Full PI0.5 15-epoch baseline while adding only training-time clean-prefix RTC.",
+  "dataset": {
+    "source_name": "jz_robot_pin_timed_merged_100eps_20260728",
+    "derived_view_name": "jz_robot_pin_timed_merged_100eps_20260728_pi05_head_right",
+    "episodes": 100,
+    "use_all_episodes": true,
+    "frames": 33898,
+    "fps": 20,
+    "mix_legacy_200_episodes": false,
+    "camera_keys": [
+      "observation.images.camera_head",
+      "observation.images.camera_right"
+    ],
+    "excluded_camera_keys": [
+      "observation.images.camera_left"
+    ],
+    "task": "Put the bottle on the right into the basket on the left.",
+    "raw_state_dim": 18,
+    "raw_action_dim": 18,
+    "model_state_dim": 16,
+    "model_action_dim": 16,
+    "left_arm_constant_dimensions_remain_in_loss": true
+  },
+  "policy": {
+    "type": "pi05",
+    "pretrained_path": "assets/modelscope/lerobot/pi05_base",
+    "finetune_mode": "full",
+    "train_expert_only": false,
+    "use_peft": false,
+    "dtype": "bfloat16",
+    "use_amp": false,
+    "gradient_checkpointing": true,
+    "compile_model": false,
+    "image_resolution": [
+      224,
+      224
+    ],
+    "image_transforms_enabled": false,
+    "chunk_size": 50,
+    "n_action_steps": 50,
+    "num_inference_steps": 10,
+    "rtc_config": null,
+    "rtc_training": {
+      "enabled": true,
+      "max_delay": 5,
+      "min_postfix_steps": 1,
+      "observed_delay_histogram": [],
+      "observed_histogram_weight": 0.9,
+      "loss_scope": "postfix_only"
+    }
+  },
+  "training": {
+    "epochs": 15,
+    "batch_size": 32,
+    "num_processes": 1,
+    "effective_batch_size": 32,
+    "num_workers": 4,
+    "steps_per_epoch": 1060,
+    "steps": 15900,
+    "checkpoint_every_epochs": 5,
+    "save_freq_steps": 5300,
+    "checkpoint_steps": [
+      5300,
+      10600,
+      15900
+    ],
+    "seed": 1000,
+    "eval_enabled": false,
+    "wandb_enabled": false
+  },
+  "optimizer": {
+    "type": "adamw",
+    "peak_lr": 0.000025,
+    "decay_lr": 0.0000025,
+    "weight_decay": 0.01,
+    "gradient_clip_norm": 1.0,
+    "betas": [
+      0.9,
+      0.95
+    ],
+    "eps": 1e-08
+  },
+  "scheduler": {
+    "type": "cosine_decay_with_warmup",
+    "configured_warmup_steps": 1000,
+    "configured_decay_steps": 30000,
+    "effective_warmup_steps": 530,
+    "effective_decay_steps": 15900
+  },
+  "normalization": {
+    "ACTION": "QUANTILES",
+    "STATE": "QUANTILES",
+    "VISUAL": "IDENTITY"
+  },
+  "expected_checkpoints": [
+    "checkpoints/005300/pretrained_model",
+    "checkpoints/010600/pretrained_model",
+    "checkpoints/015900/pretrained_model"
+  ],
+  "intentional_differences_from_working_baseline": [
+    "policy.rtc_training.enabled=true",
+    "policy.rtc_training.max_delay=5",
+    "policy.rtc_training.min_postfix_steps=1",
+    "clean-prefix token conditions and postfix-only RTC loss",
+    "new RTC condition parameters"
+  ],
+  "forbidden_changes": [
+    "expert-only finetuning",
+    "LoRA",
+    "camera_left input",
+    "legacy 200-episode data",
+    "different task text",
+    "different batch size or process count",
+    "different seed",
+    "inference-time VJP rtc_config",
+    "manual steps override"
+  ]
+}

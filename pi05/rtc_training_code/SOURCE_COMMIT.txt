@@ -1,0 +1,10 @@
+repository: /mnt/data2/ybd/vla_act/cqy
+branch: feature/cqy
+commit: 38bd9bdc7f5f855505db44a4f868fff88e039e21
+commit_date: 2026-07-12T20:21:39+08:00
+subject: feat(gr00t17): add SO101 training RTC and TensorRT workflow
+capture_date: 2026-07-29 Asia/Shanghai
+
+The JZ PI0.5 training-time RTC implementation is an uncommitted worktree change
+on top of this commit. See GIT_STATUS.txt, UNCOMMITTED_CHANGES.diff, and
+UNTRACKED_FILES.txt.
