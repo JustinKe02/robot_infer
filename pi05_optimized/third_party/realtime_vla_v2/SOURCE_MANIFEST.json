@@ -1,0 +1,27 @@
+{
+  "files": {
+    "LICENSE": {
+      "git_blob": "4a062ec890c9a8dabce1e553f4c8915456c79fd6",
+      "upstream_sha256": "216efae3f72a787703aa286f16f5d4f6a1aa50fd2071f195be776a992bec882e",
+      "vendored_sha256": "216efae3f72a787703aa286f16f5d4f6a1aa50fd2071f195be776a992bec882e"
+    },
+    "pi05_infer.py": {
+      "git_blob": "a4c4f2beaeaa7113f0574d2fd16d0683a170675f",
+      "upstream_sha256": "2f38369ae1916458b36c69f78cabd704a671743184e97df2078dbd20200fb002",
+      "vendored_sha256": "e379c1e25f3cff880decb0393c5ab9a69c5e51ea2e314b3a349ae1263805bed7"
+    },
+    "pi05rtc_infer.py": {
+      "git_blob": "de6dc99f91fff6afcfefe6ed5ea3eba7814d9e36",
+      "upstream_sha256": "845a0c13b10aa1569d113d42ffc8f43d985fbabf01a70b0d37bf44f8e29b3563",
+      "vendored_sha256": "7880356cbd8d136ec15b8336292a63c928c41221e118ec9c7aa7eb2fe9a8a973"
+    },
+    "pi0_infer.py": {
+      "git_blob": "40f546a8f70cdfddea481a9cd4cf97ca2bba5ff7",
+      "upstream_sha256": "be6c4002a88ba3cd251f551a16948f52e0917b8f9a3a2a8b67f13f4f3fadfb83",
+      "vendored_sha256": "053713d8946a8961354baeb3b3d7784d9618b16150c279882fb6ee980d4fbfd1"
+    }
+  },
+  "manifest_schema_version": 1,
+  "upstream_commit": "a36d02a7b241de1129af2048e749de58f95ead9c",
+  "upstream_repository": "https://github.com/dexmal/realtime-vla-v2"
+}

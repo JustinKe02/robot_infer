@@ -1,4 +1,5 @@
 from .base import PolicyBackend
+from .realtime_vla_v2_backend import RealtimeVLAV2Artifact, RealtimeVLAV2PolicyBackend
 from .torch_backend import TorchPolicyBackend
 from .torch_optimized_backend import TorchBackendOptions, TorchOptimizedBackend
 from .torch_rtc_conditioned_backend import (
@@ -10,6 +11,8 @@ from .triton_backend import TritonArtifact, TritonPolicyBackend
 
 __all__ = [
     "PolicyBackend",
+    "RealtimeVLAV2Artifact",
+    "RealtimeVLAV2PolicyBackend",
     "TorchBackendOptions",
     "TorchOptimizedBackend",
     "TorchPolicyBackend",

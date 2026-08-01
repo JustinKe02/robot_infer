@@ -32,7 +32,20 @@
 3. 建议验收门槛：prefix=0 至少 18/20 产生合理闭合，prefix=5 至少 16/20 产生合理闭合，并检查闭合时序和右臂轨迹是否接近普通 PI0.5。
 4. 通过离线验收后接入独立 RTC backend，按 single-step、有限动作数、连续 20 Hz 的顺序逐级上机验证。
 
-## 五、风险与注意事项
+## 五、Realtime-VLA v2 预接入进展
+
+- 已固定 v2 上游 commit `a36d02a7b241de1129af2048e749de58f95ead9c` 和最小 Triton kernel
+  来源；没有引入 pickle 服务、AIRBOT 客户端、time-axis optimizer 或 MPC。
+- 已将 v2 kernel 对齐到本地训练期 RTC 架构，显式消费 5 个 learned token-flow/prefix tensor，而非
+  直接使用上游仅 clamp/prefix-time 调制的实现。
+- 已实现严格的 51-tensor safetensors converter、artifact loader、`realtime_vla_v2` backend、独立
+  配置路径和 config-only 隔离测试。
+- 当前仅完成代码和契约接入。由于新 checkpoint 尚在重训，没有正式 artifact、GPU parity、性能
+  数字或行为门禁结果，因此本周仍不能报告 v2 带来效果提升。
+- 新 checkpoint 回传后先做 validate-only、同 seed 离线数值比较和 20-seed 行为 A/B；通过后再申请
+  只读 inference smoke，不能直接进入动作或连续 armed 阶段。
+
+## 六、风险与注意事项
 
 - 正式 RTC 训练必须保持 Full 全参数、head+right 相机、100 条数据、15 epochs、batch size 32、seed 1000 和原任务文本不变，避免再次引入多变量差异。
 - 新 checkpoint 未通过离线验收前，不直接启动无限连续 armed 控制。

@@ -28,6 +28,9 @@ if SRC_ROOT.as_posix() not in sys.path:
 from lerobot.configs.types import RTCAttentionSchedule  # noqa: E402
 from tk_infer.pi05.runtime.checkpoint import inspect_checkpoint  # noqa: E402
 from tk_infer.pi05.runtime.http_server import make_server, validate_bind_security  # noqa: E402
+from tk_infer.pi05_optimized.backends.realtime_vla_v2_backend import (  # noqa: E402
+    RealtimeVLAV2PolicyBackend,
+)
 from tk_infer.pi05_optimized.backends.torch_backend import TorchPolicyBackend  # noqa: E402
 from tk_infer.pi05_optimized.backends.torch_optimized_backend import (  # noqa: E402
     TorchOptimizedBackend,
@@ -78,7 +81,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--backend",
-        choices=["torch", "torch_optimized", "torch_rtc_conditioned", "triton"],
+        choices=[
+            "torch",
+            "torch_optimized",
+            "torch_rtc_conditioned",
+            "triton",
+            "realtime_vla_v2",
+        ],
         default=os.getenv("PI05_OPT_BACKEND", "torch"),
     )
     parser.add_argument(
@@ -99,6 +108,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--triton-artifact-path",
         type=Path,
         default=os.getenv("PI05_OPT_TRITON_ARTIFACT_PATH"),
+    )
+    parser.add_argument(
+        "--realtime-vla-v2-artifact-path",
+        type=Path,
+        default=os.getenv("PI05_OPT_REALTIME_VLA_V2_ARTIFACT_PATH"),
     )
     parser.add_argument("--device", default=os.getenv("PI05_OPT_DEVICE", "cuda"))
     parser.add_argument("--auth-token", default=os.getenv("JZ_PI05_OPT_SERVER_AUTH_TOKEN"))
@@ -132,7 +146,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--rtc-conditioned-task",
         default=os.getenv("PI05_OPT_RTC_CONDITIONED_TASK"),
-        help="Exact training task accepted by the torch_rtc_conditioned backend.",
+        help="Exact training task accepted by a training-time RTC-conditioned backend.",
     )
     parser.add_argument(
         "--require-complete-step",
@@ -260,6 +274,7 @@ def build_runtime_config(args: argparse.Namespace) -> OptimizedRuntimeConfig:
         policy_path=args.policy_path,
         tokenizer_path=args.tokenizer_path,
         triton_artifact_path=args.triton_artifact_path,
+        realtime_vla_v2_artifact_path=args.realtime_vla_v2_artifact_path,
         require_complete_step=args.require_complete_step,
         rtc_execution_horizon=args.rtc_execution_horizon,
         rtc_max_guidance_weight=args.rtc_max_guidance_weight,
@@ -291,7 +306,9 @@ def main(argv: list[str] | None = None) -> int:
         raise ValueError("config-only and check-policy-load are mutually exclusive")
     config = build_runtime_config(args)
     if args.check_policy_load and config.torch_warmup_iterations:
-        raise ValueError("check-policy-load requires torch_warmup_iterations=0 because it promises no inference")
+        raise ValueError(
+            "check-policy-load requires torch_warmup_iterations=0 because it promises no inference"
+        )
     auth_token = validate_bind_security(config.server_host, args.auth_token)
     print(f"{LOG_PREFIX} Repo root: {REPO_ROOT}")
     print(
@@ -340,8 +357,10 @@ def main(argv: list[str] | None = None) -> int:
         backend = TorchOptimizedBackend.from_runtime_config(config)
     elif config.backend == "torch_rtc_conditioned":
         backend = TorchRTCConditionedBackend.from_runtime_config(config)
-    else:
+    elif config.backend == "triton":
         backend = TritonPolicyBackend.from_runtime_config(config)
+    else:
+        backend = RealtimeVLAV2PolicyBackend.from_runtime_config(config)
     service = OptimizedPolicyService(
         backend=backend,
         trajectory_processor=build_trajectory_processor(config),

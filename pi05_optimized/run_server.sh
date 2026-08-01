@@ -23,6 +23,7 @@ SERVER_PORT="${JZ_PI05_OPT_SERVER_PORT:-18088}"
 POLICY_DEVICE="${PI05_OPT_DEVICE:-cuda}"
 BACKEND="${PI05_OPT_BACKEND:-torch}"
 TRITON_ARTIFACT_PATH="${PI05_OPT_TRITON_ARTIFACT_PATH:-}"
+REALTIME_VLA_V2_ARTIFACT_PATH="${PI05_OPT_REALTIME_VLA_V2_ARTIFACT_PATH:-}"
 TRAJECTORY_PROCESSOR="${PI05_OPT_TRAJECTORY_PROCESSOR:-pass_through}"
 MAX_REQUEST_BYTES="${JZ_PI05_OPT_MAX_REQUEST_BYTES:-67108864}"
 METRICS_WINDOW_SIZE="${PI05_OPT_METRICS_WINDOW_SIZE:-512}"
@@ -92,6 +93,9 @@ fi
 if [[ -n "${TRITON_ARTIFACT_PATH}" ]]; then
   COMMAND+=("--triton-artifact-path=${TRITON_ARTIFACT_PATH}")
 fi
+if [[ -n "${REALTIME_VLA_V2_ARTIFACT_PATH}" ]]; then
+  COMMAND+=("--realtime-vla-v2-artifact-path=${REALTIME_VLA_V2_ARTIFACT_PATH}")
+fi
 if [[ -n "${RTC_CONDITIONED_TASK}" ]]; then
   COMMAND+=("--rtc-conditioned-task=${RTC_CONDITIONED_TASK}")
 fi
@@ -109,6 +113,8 @@ if [[ "${BACKEND}" == "triton" ]]; then
   RUNTIME_PHASE=3
 elif [[ "${BACKEND}" == "torch_rtc_conditioned" ]]; then
   RUNTIME_PHASE=10
+elif [[ "${BACKEND}" == "realtime_vla_v2" ]]; then
+  RUNTIME_PHASE=11
 fi
 if [[ "${TRAJECTORY_PROCESSOR}" == "paired_temporal" ]]; then
   RUNTIME_PHASE=6

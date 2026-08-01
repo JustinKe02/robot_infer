@@ -59,9 +59,7 @@ def test_config_only_reports_inference_mode_as_single_step_only(
     monkeypatch.setattr(run_policy_server, "make_server", forbidden)
 
     assert (
-        run_policy_server.main(
-            ["--config-only", "--backend=torch_optimized", "--torch-inference-mode=true"]
-        )
+        run_policy_server.main(["--config-only", "--backend=torch_optimized", "--torch-inference-mode=true"])
         == 0
     )
 
@@ -93,6 +91,36 @@ def test_config_only_reports_rtc_conditioned_as_independent_rtc_backend(
     output = capsys.readouterr().out
     assert '"backend": "torch_rtc_conditioned"' in output
     assert '"supported_modes": [\n    "single_step",\n    "rtc"\n  ]' in output
+
+
+def test_config_only_reports_realtime_vla_v2_without_artifact_model_or_socket(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def forbidden(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("config-only attempted an artifact, model, or socket operation")
+
+    monkeypatch.setattr(run_policy_server.RealtimeVLAV2PolicyBackend, "from_runtime_config", forbidden)
+    monkeypatch.setattr(run_policy_server, "inspect_checkpoint", forbidden)
+    monkeypatch.setattr(run_policy_server, "make_server", forbidden)
+    monkeypatch.delenv("PI05_OPT_REALTIME_VLA_V2_ARTIFACT_PATH", raising=False)
+
+    assert (
+        run_policy_server.main(
+            [
+                "--config-only",
+                "--backend=realtime_vla_v2",
+                "--rtc-conditioned-task=jz robot pin timed vr teleoperation",
+            ]
+        )
+        == 0
+    )
+
+    output = capsys.readouterr().out
+    assert '"backend": "realtime_vla_v2"' in output
+    assert '"realtime_vla_v2_artifact_path": null' in output
+    assert '"supported_modes": [\n    "single_step",\n    "rtc"\n  ]' in output
+    assert "no model was loaded, and no socket was opened" in output
 
 
 def test_optimized_python_and_shell_sources_have_no_robot_execution_path() -> None:

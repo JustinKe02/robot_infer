@@ -10,7 +10,13 @@ from lerobot.configs.types import RTCAttentionSchedule
 from tk_infer.pi05.runtime.protocol import MAX_ACTION_CHUNK_STEPS
 from tk_infer.pi05_optimized.constants import DEFAULT_TRACE_BACKUP_COUNT, DEFAULT_TRACE_MAX_BYTES
 
-BackendName: TypeAlias = Literal["torch", "torch_optimized", "torch_rtc_conditioned", "triton"]
+BackendName: TypeAlias = Literal[
+    "torch",
+    "torch_optimized",
+    "torch_rtc_conditioned",
+    "triton",
+    "realtime_vla_v2",
+]
 TrajectoryProcessorName: TypeAlias = Literal["pass_through", "paired_temporal"]
 
 DEFAULT_SERVER_HOST = "127.0.0.1"
@@ -33,6 +39,7 @@ class OptimizedRuntimeConfig:
     policy_path: Path | None = None
     tokenizer_path: Path | None = None
     triton_artifact_path: Path | None = None
+    realtime_vla_v2_artifact_path: Path | None = None
     require_complete_step: bool = True
     rtc_execution_horizon: int = 10
     rtc_max_guidance_weight: float = 10.0
@@ -57,9 +64,16 @@ class OptimizedRuntimeConfig:
     temporal_solver_timeout_s: float = 0.05
 
     def __post_init__(self) -> None:
-        if self.backend not in {"torch", "torch_optimized", "torch_rtc_conditioned", "triton"}:
+        if self.backend not in {
+            "torch",
+            "torch_optimized",
+            "torch_rtc_conditioned",
+            "triton",
+            "realtime_vla_v2",
+        }:
             raise ValueError(
-                "backend must be 'torch', 'torch_optimized', 'torch_rtc_conditioned', or 'triton', "
+                "backend must be 'torch', 'torch_optimized', 'torch_rtc_conditioned', 'triton', "
+                "or 'realtime_vla_v2', "
                 f"got {self.backend!r}"
             )
         if self.trajectory_processor not in {"pass_through", "paired_temporal"}:
@@ -108,10 +122,13 @@ class OptimizedRuntimeConfig:
         rtc_conditioned_task = (
             None if self.rtc_conditioned_task is None else self.rtc_conditioned_task.strip()
         )
-        if self.backend == "torch_rtc_conditioned" and not rtc_conditioned_task:
-            raise ValueError("backend='torch_rtc_conditioned' requires rtc_conditioned_task")
-        if self.backend != "torch_rtc_conditioned" and rtc_conditioned_task is not None:
-            raise ValueError("rtc_conditioned_task requires backend='torch_rtc_conditioned'")
+        rtc_conditioned_backends = {"torch_rtc_conditioned", "realtime_vla_v2"}
+        if self.backend in rtc_conditioned_backends and not rtc_conditioned_task:
+            raise ValueError(f"backend={self.backend!r} requires rtc_conditioned_task")
+        if self.backend not in rtc_conditioned_backends and rtc_conditioned_task is not None:
+            raise ValueError(
+                "rtc_conditioned_task requires backend='torch_rtc_conditioned' or backend='realtime_vla_v2'"
+            )
         if (
             isinstance(self.metrics_window_size, bool)
             or not isinstance(self.metrics_window_size, int)
@@ -168,8 +185,10 @@ class OptimizedRuntimeConfig:
         optimized_requested = any(torch_flags.values()) or self.torch_warmup_iterations > 0
         if self.backend != "torch_optimized" and optimized_requested:
             raise ValueError("torch optimization flags require backend='torch_optimized'")
-        if self.backend == "triton" and not self.device.strip().lower().startswith("cuda"):
-            raise ValueError("backend='triton' requires a CUDA device")
+        if self.backend in {"triton", "realtime_vla_v2"} and not self.device.strip().lower().startswith(
+            "cuda"
+        ):
+            raise ValueError(f"backend={self.backend!r} requires a CUDA device")
         if self.torch_non_blocking_copies and not self.torch_pinned_memory:
             raise ValueError("torch_non_blocking_copies requires torch_pinned_memory=true")
         if self.torch_cuda_graph and not self.torch_static_buffers:
@@ -207,6 +226,19 @@ class OptimizedRuntimeConfig:
                     f"triton_artifact_path must stay inside {OPTIMIZED_ROOT}, got {triton_artifact_path}"
                 )
         object.__setattr__(self, "triton_artifact_path", triton_artifact_path)
+        realtime_vla_v2_artifact_path = _normalize_optional_path(self.realtime_vla_v2_artifact_path)
+        if realtime_vla_v2_artifact_path is not None:
+            realtime_vla_v2_artifact_path = realtime_vla_v2_artifact_path.resolve()
+            if not realtime_vla_v2_artifact_path.is_relative_to(OPTIMIZED_ROOT):
+                raise ValueError(
+                    "realtime_vla_v2_artifact_path must stay inside "
+                    f"{OPTIMIZED_ROOT}, got {realtime_vla_v2_artifact_path}"
+                )
+        object.__setattr__(
+            self,
+            "realtime_vla_v2_artifact_path",
+            realtime_vla_v2_artifact_path,
+        )
         object.__setattr__(self, "trace_path", trace_path)
 
     def require_model_paths(self) -> tuple[Path, Path]:
@@ -221,6 +253,11 @@ class OptimizedRuntimeConfig:
             raise ValueError("triton_artifact_path is required to load the Triton backend")
         return self.triton_artifact_path
 
+    def require_realtime_vla_v2_artifact_path(self) -> Path:
+        if self.realtime_vla_v2_artifact_path is None:
+            raise ValueError("realtime_vla_v2_artifact_path is required to load the Realtime-VLA v2 backend")
+        return self.realtime_vla_v2_artifact_path
+
     def public_dict(self) -> dict[str, object]:
         return {
             "backend": self.backend,
@@ -233,6 +270,11 @@ class OptimizedRuntimeConfig:
             "tokenizer_path": None if self.tokenizer_path is None else str(self.tokenizer_path),
             "triton_artifact_path": (
                 None if self.triton_artifact_path is None else str(self.triton_artifact_path)
+            ),
+            "realtime_vla_v2_artifact_path": (
+                None
+                if self.realtime_vla_v2_artifact_path is None
+                else str(self.realtime_vla_v2_artifact_path)
             ),
             "require_complete_step": self.require_complete_step,
             "rtc_execution_horizon": self.rtc_execution_horizon,

@@ -121,6 +121,45 @@ trace、真实输入 dry-run 和机器人门禁；离线接入通过不等于已
 约束、pairing、force 和 finiteness 与任务成功率、物理周期分开报告；没有每档至少 10 次带来源标注
 的现场 trial 时，不得把 scheduler 结果表述为任务成功。
 
+### 阶段 11：Realtime-VLA v2 训练期 RTC 接入
+
+已固定 `dexmal/realtime-vla-v2@a36d02a7b241de1129af2048e749de58f95ead9c` 的 PI0/PI0.5/PI0.5
+RTC Triton kernel、MIT LICENSE、Git blob 和上游/本地 SHA-256。没有引入上游 pickle server、pickle
+checkpoint adapter、AIRBOT client、time-axis optimizer 或 MPC。
+
+本地 v2 kernel 已扩展为消费当前 PI0.5 训练实现的 5 个 learned RTC tensor，并按训练架构给每个
+action token 加入 token-flow time embedding 和 prefix embedding。v2 converter 固定输出 51 个 BF16
+tensor 的 `safetensors + manifest.json`，要求 `rtc_training.enabled=true`、`head_right`、chunk 50、
+model16/raw18、相同训练 task 和完整 learned RTC 参数；loader 会校验来源 commit、文件哈希、header、
+tensor key/shape/dtype、force 槽和最大 prefix。
+
+配置预检不会读取 checkpoint、artifact 或 tokenizer，也不会构造模型或 socket：
+
+```bash
+PI05_OPT_BACKEND=realtime_vla_v2 \
+PI05_OPT_RTC_CONDITIONED_TASK='jz robot pin timed vr teleoperation' \
+CONFIG_ONLY=true \
+bash tk_infer/pi05_optimized/run_server.sh
+```
+
+新 checkpoint 到位后的第一步只能做转换校验：
+
+```bash
+conda run --no-capture-output -n lerobot_flex \
+  python tk_infer/pi05_optimized/tools/convert_pi05_safetensors_to_realtime_vla_v2.py \
+  --policy-path=/absolute/path/to/pretrained_model \
+  --rtc-conditioned-task='jz robot pin timed vr teleoperation' \
+  --validate-only
+```
+
+当前状态是“源码、转换器、严格 artifact loader、backend/config/launcher 和 CPU 契约测试已接入”。新
+checkpoint 尚未交付，因而没有生成正式 v2 artifact，也没有执行 GPU 数值 parity、性能基准或行为
+门禁；不得据此声明任何效果提升。正式候选必须在同 observation/task/noise 下比较 conditioned Torch
+和 v2，覆盖 prefix `0/1/5/max_delay`，并通过关节 p99 `<0.005 rad`、最大 `<0.01 rad`、夹爪 p99
+`<0.5`、force 精确 `80`、无 NaN/Inf 和至少 20 个固定 seed。行为门禁为 prefix=0 至少 `18/20`
+合理闭合、prefix=5 至少 `16/20`；性能门禁为 p95 `<=50 ms`，或相对同 checkpoint Torch 至少改善
+20%，且 p99 `<=100 ms`。
+
 ## 20 Hz 的正确含义
 
 当前 RTC 的 20 Hz 指 Actor 每 50 ms 消费并发送一个动作，不要求模型每 50 ms 完成一次完整推理。
@@ -254,6 +293,17 @@ conda run -n lerobot_flex \
   python tk_infer/pi05_optimized/tools/offline_phase9_speed_profiles.py \
   --source=recorded --control-hz=20 --max-joint-step-rad=0.02 \
   --output-json=tk_infer/pi05_optimized/outputs/phase9_fixed_speed_recorded_profiles.json
+```
+
+阶段 11 v2 代码/配置契约测试：
+
+```bash
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
+conda run --no-capture-output -n lerobot_flex \
+  python -m pytest -q \
+  tk_infer/pi05_optimized/tests/test_realtime_vla_v2.py \
+  tk_infer/pi05_optimized/tests/test_config.py \
+  tk_infer/pi05_optimized/tests/test_launcher_isolation.py
 ```
 
 ## 策略服务

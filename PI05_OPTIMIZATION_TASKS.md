@@ -1,6 +1,6 @@
 # PI0.5 推理优化任务台账
 
-更新时间：2026-07-30
+更新时间：2026-07-31
 
 本文档记录 PI0.5 优化推理链路的实施和验证证据。可信基线 `tk_infer/pi05/` 保持不变；新的优化实现
 位于 `tk_infer/pi05_optimized/`。直接真机命令见
@@ -63,6 +63,47 @@
   均精确 clamp，force 槽保持 80。
 - [!] conditioned checkpoint 尚未完成 recorded paired replay、真实输入 dry-run 和上机门禁。
 - [!] Realtime-VLA v2 继续作为独立接入阶段；当前 Phase 0-9 和 v1 single-step 不得称为 v2。
+
+## 阶段 11：Realtime-VLA v2 训练期 RTC（等待新 checkpoint 验收）
+
+目标：保留本地协议 v3、model16/raw18 processor 和已审计队列语义，只接入 v2 RTC Triton kernel；
+不得以源码接入或 config-only 通过替代效果验收。
+
+- [x] 固定 `dexmal/realtime-vla-v2@a36d02a7b241de1129af2048e749de58f95ead9c` 的最小 kernel
+  文件、MIT LICENSE、Git blob、上游 SHA-256 和修改后 SHA-256。
+- [x] 未引入上游不受限 pickle server/checkpoint loader、AIRBOT observer/actuator、time-axis optimizer
+  或 MPC。
+- [x] 扩展 v2 PI0.5 RTC kernel，消费本地训练架构的 5 个 learned token-flow/prefix tensor；prefix
+  token 使用 flow time 0 和 prefix embedding，AdaRMS 继续使用当前全局 denoise time。
+- [x] 实现 51-tensor BF16 `safetensors + manifest.json` converter、严格 artifact loader 和
+  `realtime_vla_v2` backend；拒绝错误 commit/header/hash/key/shape/dtype/task/camera/action/RTC contract。
+- [x] backend 将 delay-sized model16 leftover 补零到 internal32，拒绝超过训练 max_delay、缺失/过短
+  leftover、非有限值和 kernel prefix clamp 失败；raw18 force 槽必须精确为 80。
+- [x] 配置、独立 artifact 路径、shell launcher 和 config-only 隔离已接入；config-only 不读取
+  checkpoint/artifact，不构造模型或 socket。
+- [x] v2 provenance、artifact 篡改、5 tensor 映射、token condition、prefix、force、配置和 launcher
+  CPU 测试通过。
+- [!] 新 RTC checkpoint 正在外部重新训练，尚未生成正式 v2 artifact。
+- [!] 尚未执行同 observation/task/noise 的 Torch-conditioned 与 v2 GPU parity；必须覆盖 prefix
+  `0/1/5/max_delay` 和至少 20 个固定 seed。
+- [!] 尚未通过行为门禁：prefix=0 至少 `18/20` 合理闭合，prefix=5 至少 `16/20`。
+- [!] 尚未通过性能门禁：p95 `<=50 ms`，或相对同 checkpoint Torch 至少改善 20%，且 p99
+  `<=100 ms`。
+- [!] 通过全部离线/只读门禁前，不启动 v2 inference smoke、动作 transport 或 armed 控制。
+
+当前无硬件验收命令：
+
+```bash
+PI05_OPT_BACKEND=realtime_vla_v2 \
+PI05_OPT_RTC_CONDITIONED_TASK='jz robot pin timed vr teleoperation' \
+CONFIG_ONLY=true \
+bash tk_infer/pi05_optimized/run_server.sh
+
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 conda run --no-capture-output -n lerobot_flex \
+  python -m pytest -q tk_infer/pi05_optimized/tests/test_realtime_vla_v2.py \
+  tk_infer/pi05_optimized/tests/test_config.py \
+  tk_infer/pi05_optimized/tests/test_launcher_isolation.py
+```
 
 离线行为 A/B 入口：
 

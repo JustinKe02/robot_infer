@@ -130,6 +130,38 @@ def test_rtc_conditioned_backend_is_independent_from_torch_optimization_flags() 
         )
 
 
+def test_realtime_vla_v2_requires_confined_artifact_cuda_and_locked_task() -> None:
+    artifact = OPTIMIZED_ROOT / "artifacts/realtime_vla_v2/test-artifact"
+    config = OptimizedRuntimeConfig(
+        backend="realtime_vla_v2",
+        realtime_vla_v2_artifact_path=artifact,
+        rtc_conditioned_task="jz robot pin timed vr teleoperation",
+    )
+
+    assert config.require_realtime_vla_v2_artifact_path() == artifact
+    assert config.public_dict()["realtime_vla_v2_artifact_path"] == str(artifact)
+    with pytest.raises(ValueError, match="requires rtc_conditioned_task"):
+        OptimizedRuntimeConfig(backend="realtime_vla_v2")
+    with pytest.raises(ValueError, match="artifact_path is required"):
+        OptimizedRuntimeConfig(
+            backend="realtime_vla_v2",
+            rtc_conditioned_task="task",
+        ).require_realtime_vla_v2_artifact_path()
+    with pytest.raises(ValueError, match="must stay inside"):
+        OptimizedRuntimeConfig(
+            backend="realtime_vla_v2",
+            realtime_vla_v2_artifact_path="/tmp/realtime-vla-v2-artifact",
+            rtc_conditioned_task="task",
+        )
+    with pytest.raises(ValueError, match="requires a CUDA"):
+        OptimizedRuntimeConfig(
+            backend="realtime_vla_v2",
+            realtime_vla_v2_artifact_path=artifact,
+            rtc_conditioned_task="task",
+            device="cpu",
+        )
+
+
 def test_phase6_temporal_processor_is_explicit_and_defaults_to_speed_one() -> None:
     config = OptimizedRuntimeConfig(trajectory_processor="paired_temporal")
 
